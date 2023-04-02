@@ -11,11 +11,11 @@ from invokes import invoke_http
 app = Flask(__name__)
 CORS(app)
 
-order_URL = "http://localhost:5000/order"
-payment_URL = "http://localhost:5001/payment"
-notification_URL = "http://localhost:5002/notification"
-error_URL = "http://localhost:5003/error"
-activity_log_URL = "http://localhost:5004/activity_log"
+order_URL = "http://<youripaddress>:5000/order"
+payment_URL = "http://<youripaddress>:5001/payment"
+notification_URL = "http://<youripaddress>:5002/notification"
+error_URL = "http://<youripaddress>:5003/error"
+activity_log_URL = "http://<youripaddress>:5004/activity_log"
 
 
 @app.route("/placeOrder", methods=['POST'])
@@ -37,13 +37,14 @@ def placeOrder():
             fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
             ex_str = str(e) + " at " + str(exc_type) + ": " + fname + ": line " + str(exc_tb.tb_lineno)
             print(ex_str)
-
+            amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="placeOrder.error", body=json.dumps({"code": 500, "message": "createOrder.py internal error: " + ex_str}), properties=pika.BasicProperties(delivery_mode = 2))
             return jsonify({
                 "code": 500,
-                "message": "place_order.py internal error: " + ex_str
+                "message": "createOrder.py internal error: " + ex_str
             }), 500
 
     # if reached here, not a JSON request.
+    amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="placeOrder.error", body=json.dumps({"code": 400, "message": "Invalid JSON input: " + str(request.get_data())}), properties=pika.BasicProperties(delivery_mode = 2))
     return jsonify({
         "code": 400,
         "message": "Invalid JSON input: " + str(request.get_data())
@@ -51,12 +52,29 @@ def placeOrder():
 
 @app.route("/payment/success/<string:orderID>")
 def successOrderPlace(orderID):
-    return_result = invoke_http("http://localhost:5001/payment/success/" + orderID)
+    return_result = invoke_http(payment_URL + "/success/" + orderID)
     get_order = json.dumps(invoke_http(order_URL + "/" + orderID))
     print(get_order)
     print(type(get_order))
     amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="neworder.notification", body=get_order, properties=pika.BasicProperties(delivery_mode = 2))
+    amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="activity", body=json.dumps(return_result), properties=pika.BasicProperties(delivery_mode = 2))
+    return return_result
 
+@app.route('/payment/cancel/<string:orderID>')
+def cancelOrderPlace(orderID):
+    return_result = invoke_http(payment_URL + "/cancel")
+    update_order = invoke_http(order_URL + "/" + orderID, method="PUT", json={"status": "payment canceled"})
+    code = update_order["code"]
+    if code not in range(200, 300):
+        amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="cancel.error", body=json.dumps(update_order), properties=pika.BasicProperties(delivery_mode = 2))
+        return {
+            "code": 500,
+            "data": {"order_result": update_order},
+            "message": "update order failure sent for error handling."
+        }
+    print(update_order)
+    print(type(update_order))
+    amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="activity", body=json.dumps(return_result), properties=pika.BasicProperties(delivery_mode = 2))
     return return_result
 
 def processPlaceOrder(order):
@@ -65,6 +83,15 @@ def processPlaceOrder(order):
     print('\n-----Invoking order microservice-----')
     order_result = invoke_http(order_URL, method='POST', json=order)
     print('order_result:', order_result)
+
+    code = order_result["code"]
+    if code not in range(200, 300):
+        amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="placeOrder.error", body=json.dumps(order_result), properties=pika.BasicProperties(delivery_mode = 2))
+        return {
+            "code": 500,
+            "data": {"order_result": order_result},
+            "message": "place order failure sent for error handling."
+        }
     
     payment_json = {
                 "name": order_result['data']['orderID'],
@@ -82,49 +109,45 @@ def processPlaceOrder(order):
     # - reply from the invocation is not used;
     # continue even if this invocation fails
     print(payment_result)
-    return payment_result
 
-    # Check the order result; if a failure, send it to the error microservice.
-    code = order_result["code"]
+    code = payment_result["code"]
     if code not in range(200, 300):
-
-
-    # Inform the error microservice
-        print('\n\n-----Invoking error microservice as order fails-----')
-        invoke_http(error_URL, method="POST", json=order_result)
-            # - reply from the invocation is not used; 
-            # continue even if this invocation fails
-        print("Order status ({:d}) sent to the error microservice:".format(
-            code), order_result)
-
-
-    # 7. Return error
+        amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="placeOrder.error", body=json.dumps(payment_result), properties=pika.BasicProperties(delivery_mode = 2))
         return {
             "code": 500,
-            "data": {"order_result": order_result},
-            "message": "Order creation failure sent for error handling."
+            "data": {"payment_result": payment_result},
+            "message": "Payment failure sent for error handling."
         }
 
+    amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="activity", body=json.dumps(payment_result), properties=pika.BasicProperties(delivery_mode = 2))
+    return payment_result
 
-    # # 5. Send new order to shipping
-    # # Invoke the shipping record microservice
-    # print('\n\n-----Invoking shipping_record microservice-----')
-    # shipping_result = invoke_http(
-    # shipping_record_URL, method="POST", json=order_result['data'])
-    # print("shipping_result:", shipping_result, '\n')
+    # # Check the order result; if a failure, send it to the error microservice.
+    # code = order_result["code"]
+    # if code not in range(200, 300):
+
+
+    # # Inform the error microservice
+    #     print('\n\n-----Invoking error microservice as order fails-----')
+    #     invoke_http(error_URL, method="POST", json=order_result)
+    #         # - reply from the invocation is not used; 
+    #         # continue even if this invocation fails
+    #     print("Order status ({:d}) sent to the error microservice:".format(
+    #         code), order_result)
+
+
+    # # 7. Return error
+    #     return {
+    #         "code": 500,
+    #         "data": {"order_result": order_result},
+    #         "message": "Order creation failure sent for error handling."
+    #     }
 
 
     # # Check the shipping result;
     # # if a failure, send it to the error microservice.
     # code = shipping_result["code"]
     # if code not in range(200, 300):
-
-
-    # # Inform the error microservice
-    #     print('\n\n-----Invoking error microservice as shipping fails-----')
-    #     invoke_http(error_URL, method="POST", json=shipping_result)
-    #     print("Shipping status ({:d}) sent to the error microservice:".format(
-    #         code), shipping_result)
 
 
     # # 7. Return error
@@ -139,7 +162,7 @@ def processPlaceOrder(order):
 
 
     # 7. Return created order, shipping record
-    return {payment_result}
+    # return {payment_result}
 
 
 # Execute this program if it is run as a main script (not by 'import')
