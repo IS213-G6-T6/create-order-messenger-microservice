@@ -1,6 +1,5 @@
 # create-order-messenger-microservice
 
-It is works but it is not completed yet, short of the activity log implementation and error implementation
 
 example input:
 const data = {
