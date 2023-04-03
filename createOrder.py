@@ -11,11 +11,11 @@ from invokes import invoke_http
 app = Flask(__name__)
 CORS(app)
 
-order_URL = "http://<youripaddress>:5000/order"
-payment_URL = "http://<youripaddress>:5001/payment"
-notification_URL = "http://<youripaddress>:5002/notification"
-error_URL = "http://<youripaddress>:5003/error"
-activity_log_URL = "http://<youripaddress>:5004/activity_log"
+order_URL = "http://host.docker.internal:5000/order"
+payment_URL = "http://host.docker.internal:5001/payment"
+notification_URL = "http://host.docker.internal:5002/notification"
+error_URL = "http://host.docker.internal:5003/error"
+activity_log_URL = "http://host.docker.internal:5004/activity_log"
 
 
 @app.route("/placeOrder", methods=['POST'])
