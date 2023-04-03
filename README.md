@@ -1,8 +1,8 @@
 # create-order-messenger-microservice
 
-docker build -t <dockerID>/placeorder:8.0 ./
+docker build -t <dockerID>/placeorder:9.0 ./
 
-docker run -p 5100:5100 <dockerID>/placeorder:8.0
+docker run -p 5100:5100 <dockerID>/placeorder:9.0
 
 example input:
 const data = {
