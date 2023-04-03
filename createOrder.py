@@ -54,6 +54,15 @@ def placeOrder():
 def successOrderPlace(orderID):
     return_result = invoke_http(payment_URL + "/success/" + orderID)
     get_order = json.dumps(invoke_http(order_URL + "/" + orderID))
+    update_order = invoke_http(order_URL + "/" + orderID, method="PUT", json={"status": "payment success"})
+    code = update_order["code"]
+    if code not in range(200, 300):
+        amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="success.error", body=json.dumps(update_order), properties=pika.BasicProperties(delivery_mode = 2))
+        return {
+            "code": 500,
+            "data": {"order_result": update_order},
+            "message": "update order failure sent for error handling."
+        }
     print(get_order)
     print(type(get_order))
     amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="neworder.notification", body=get_order, properties=pika.BasicProperties(delivery_mode = 2))
