@@ -4,6 +4,7 @@ import json
 import os, sys
 import amqp_setup
 import pika
+from twilio.rest import Client
 
 import requests
 from invokes import invoke_http
@@ -17,6 +18,12 @@ notification_URL = "http://host.docker.internal:5002/notification"
 error_URL = "http://host.docker.internal:5003/error"
 activity_log_URL = "http://host.docker.internal:5004/activity_log"
 
+account_sid = 'AC3983540c484253b5bd88c59a6c909889'
+auth_token = 'a26344cea222e020b47b1b829ba77415'
+twilio_phone_number = '+14406933814'
+receipient = '+33756491209'
+
+client = Client(account_sid, auth_token)
 
 @app.route("/placeOrder", methods=['POST'])
 def placeOrder():
@@ -37,14 +44,14 @@ def placeOrder():
             fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
             ex_str = str(e) + " at " + str(exc_type) + ": " + fname + ": line " + str(exc_tb.tb_lineno)
             print(ex_str)
-            amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="placeOrder.error", body=json.dumps({"code": 500, "message": "createOrder.py internal error: " + ex_str}), properties=pika.BasicProperties(delivery_mode = 2))
+            amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="placeOrder.error", body=json.dumps({"type": "place_order", "info": "createOrder.py internal error: " + ex_str}), properties=pika.BasicProperties(delivery_mode = 2))
             return jsonify({
                 "code": 500,
                 "message": "createOrder.py internal error: " + ex_str
             }), 500
 
     # if reached here, not a JSON request.
-    amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="placeOrder.error", body=json.dumps({"code": 400, "message": "Invalid JSON input: " + str(request.get_data())}), properties=pika.BasicProperties(delivery_mode = 2))
+    amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="placeOrder.error", body=json.dumps({"type": "place_order", "info": "Invalid JSON input: " + str(request.get_data())}), properties=pika.BasicProperties(delivery_mode = 2))
     return jsonify({
         "code": 400,
         "message": "Invalid JSON input: " + str(request.get_data())
@@ -57,7 +64,7 @@ def successOrderPlace(orderID):
     update_order = invoke_http(order_URL + "/" + orderID, method="PUT", json={"status": "payment success"})
     code = update_order["code"]
     if code not in range(200, 300):
-        amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="success.error", body=json.dumps(update_order), properties=pika.BasicProperties(delivery_mode = 2))
+        amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="success.error", body=json.dumps({"type": "place_order", "info": "Error updating status"}), properties=pika.BasicProperties(delivery_mode = 2))
         return {
             "code": 500,
             "data": {"order_result": update_order},
@@ -65,8 +72,14 @@ def successOrderPlace(orderID):
         }
     print(get_order)
     print(type(get_order))
-    amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="neworder.notification", body=get_order, properties=pika.BasicProperties(delivery_mode = 2))
-    amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="activity", body=json.dumps(return_result), properties=pika.BasicProperties(delivery_mode = 2))
+    message = client.messages.create(
+            body="Hawker-management Order " + orderID + " Successfully Created",
+            from_ = twilio_phone_number,
+            to = receipient
+        )
+    print("SMS notification sent: ", message.sid)
+    print(message)
+    amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="activity", body=json.dumps({"type": "place_order", "info": "Successfully updated order and send notification to user"}), properties=pika.BasicProperties(delivery_mode = 2))
     return return_result
 
 @app.route('/payment/cancel/<string:orderID>')
@@ -75,7 +88,7 @@ def cancelOrderPlace(orderID):
     update_order = invoke_http(order_URL + "/" + orderID, method="PUT", json={"status": "payment canceled"})
     code = update_order["code"]
     if code not in range(200, 300):
-        amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="cancel.error", body=json.dumps(update_order), properties=pika.BasicProperties(delivery_mode = 2))
+        amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="cancel.error", body=json.dumps({"type": "place_order", "info": "Error failed to cancel paymeny"}), properties=pika.BasicProperties(delivery_mode = 2))
         return {
             "code": 500,
             "data": {"order_result": update_order},
@@ -83,7 +96,7 @@ def cancelOrderPlace(orderID):
         }
     print(update_order)
     print(type(update_order))
-    amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="activity", body=json.dumps(return_result), properties=pika.BasicProperties(delivery_mode = 2))
+    amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="activity", body=json.dumps({"type": "place_order", "info": "Order payment successfully canceled"}), properties=pika.BasicProperties(delivery_mode = 2))
     return return_result
 
 def processPlaceOrder(order):
@@ -95,7 +108,7 @@ def processPlaceOrder(order):
 
     code = order_result["code"]
     if code not in range(200, 300):
-        amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="placeOrder.error", body=json.dumps(order_result), properties=pika.BasicProperties(delivery_mode = 2))
+        amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="placeOrder.error", body=json.dumps({"type": "place_order", "info": "Failed to create order"}), properties=pika.BasicProperties(delivery_mode = 2))
         return {
             "code": 500,
             "data": {"order_result": order_result},
@@ -121,14 +134,14 @@ def processPlaceOrder(order):
 
     code = payment_result["code"]
     if code not in range(200, 300):
-        amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="placeOrder.error", body=json.dumps(payment_result), properties=pika.BasicProperties(delivery_mode = 2))
+        amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="placeOrder.error", body=json.dumps({"type": "place_order", "info": "Fail to create payment"}), properties=pika.BasicProperties(delivery_mode = 2))
         return {
             "code": 500,
             "data": {"payment_result": payment_result},
             "message": "Payment failure sent for error handling."
         }
 
-    amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="activity", body=json.dumps(payment_result), properties=pika.BasicProperties(delivery_mode = 2))
+    amqp_setup.channel.basic_publish(exchange=amqp_setup.exchangename, routing_key="activity", body=json.dumps({"type": "place_order", "info": "Successfully created payment"}), properties=pika.BasicProperties(delivery_mode = 2))
     return payment_result
 
     # # Check the order result; if a failure, send it to the error microservice.
